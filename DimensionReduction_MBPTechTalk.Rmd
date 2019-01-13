@@ -1,0 +1,276 @@
+---
+title: "Dimesion Reduction: From modelling to visualization"
+output: html_notebook
+---
+
+Dimensionality reduction: reducing number of variables to a set of factors or representations in a lower dimensional space.
+
+We can categrozie the dimension reduction approaches to **Matrix Factorization** (such as PCA, NMF, etc.) and **Neighbour Graphs** (t-SNE, UMAP, etc.).
+
+Here, we are going to compare few of these approaches on genomic data. Gene expression of cancer cell lines of six different tissue types including lung, haematopoietic and lymphoid tissue, central nervous system, large intestine, breast and skin are considered for our analysis. 
+
+First we extract the gene expression matrices of these cancer cell lines from Cancer Cell Line Encyclopedia (CCLE) dataset curated and provided in the PharmacoGx R package.
+First, let's download the CCLE dataset in R.
+```{r}
+library(PharmacoGx)
+library(Biobase)
+PSetName <- "CCLE"
+TargetPset <- downloadPSet(PSetName)
+
+sort(table(TargetPset@cell$tissueid))
+```
+Now we can extract the gene expression matrix of the cell lines for the chosen tissue types. 
+* We also define a tissue and color vectors that will help us later on for coloring the sample in the plots.
+
+```{r}
+TargetTissues <- c("lung","haematopoietic_and_lymphoid_tissue",
+                   "central_nervous_system", "large_intestine",
+                   "breast", "skin")
+TargetID <- which(TargetPset@cell$tissueid %in% TargetTissues)
+CellID <- TargetPset@cell$cellid[TargetID]
+TissueVec <- TargetPset@cell$tissueid[TargetID]
+
+RefCol <- c("seagreen", "orange",
+            "grey", "darkblue",
+            "pink", "black")
+ColorVec <- unlist(lapply(TissueVec, function(X){RefCol[which(TargetTissues == X)]}))
+```
+ali.madanitonekaboni@mail.utoronto.ca
+```{r}
+MolProfile <- "rnaseq"
+ExpProfile <- exprs(summarizeMolecularProfiles(
+  TargetPset,  mDataType = MolProfile, verbose=TRUE, 
+  cell.lines = CellID))
+```
+
+
+We need to remove the samples with missing values.
+```{r}
+Keep_SamId <- unique(which(!is.na(ExpProfile), arr.ind = T)[,2])
+ExpProfile <- ExpProfile[,Keep_SamId]
+ColorVec <- ColorVec[Keep_SamId]
+dim(ExpProfile)
+```
+Let's limit the features (genes) to the top 200 most variant genes across all samples. Please notice that it is an unsupervised approach and we are not using cell line labels yet.
+```{r}
+FeatureNum <- 500
+MadVec <- apply(ExpProfile, 1, mad) # MAD: Median Absolute Deviation from median
+Keep_GeneId <- sort(MadVec, decreasing = T, index.return=T)[[2]][1:FeatureNum]
+ExpProfile <- ExpProfile[Keep_GeneId,]
+dim(ExpProfile)
+```
+# Principal Component Analysis
+Principal component analysis creates new orthogonal variables (principle components) that are linear combinations of the original variables. The focus of PCA is to reproduce the total variance in the original higher dimensional space in the lower dimensional space.
+PCA is an optimum approach for mapping to the lower dimensional space and be able to reconstruct the original space afterward.
+
+1) The first principal component (PC) corresponds to a line that passes through the mean. The lines is the regression line so that it minimizes the sum of squares of the distances of the points from the line. 
+2) The second PC corresponds to the same concept after all correlation with the first principal component has been subtracted from the points.
+
+**Assumptions:**
+If we plot the data points in 2D so that the 1st PC will be x and the 2nd PC will be y, we can see that the 1st component separates the haematopoietic and lymphoid tissue cancer cell lines from the rest but we cannot see more separation between the tissue types. Maybe with more PCs (higher dimensions) we will be able to separate the cell lines of different tissue types but it will become more complicated and we will not be able to visualize it.
+```{r}
+PC <- prcomp(t(ExpProfile)) # Samples in rows and features in columns
+plot(PC$x[,1], PC$x[,2], ylab = "PC 2",
+     xlab = "PC 1", pch = 19, cex=0.5)
+```
+PCA is an unsupervised approach. We add color for the sample labels afterward.
+```{r}
+plot(PC$x[,1], PC$x[,2], ylab = "PC 2",
+     xlab = "PC 1", pch = 19, cex=0.5, col = ColorVec)
+```
+
+As mentioned, PCA tries to reconstruct the variance within the original set of variables (original space). Each principle component explains fraction of this varaince. First to last PCs are ordered based on the fraction of variance they explain.
+"
+```{r}
+Explained_Var <- 100*PC$sdev^2/sum(PC$sdev^2)
+plot(Explained_Var[1:80], ylab = "Percentage of variance explained by each PC",
+     xlab = "Principal component rank", pch = 19, col = "red")
+```
+Let's see how the variance explanied by PCs can be summed up to explain all the varaince in the data.
+```{r}
+plot(cumsum(Explained_Var[1:80]), ylab = "Cumulative percentage of variance explained",
+     xlab = "Principal component rank", pch = 19, col = "red")
+```
+
+* Euclidean distance between points (not approapriate always such as for counts of abundance)
+* Assume a linear relationship between variables (if data are nonlinear, PCA produces an artifact called "horseshoe effect" in which axis 2 is twisted relative to axis 1)
+
+```{r}
+RandVec <- c(rep(1,3)+runif(n = 3,min = 0,max = 0.5),
+             rep(4,3)+runif(n = 3,min = 0,max = 0.5),
+             rep(8,4)+runif(n = 4,min = 0,max = 0.5),
+             rep(10,4)+runif(n = 4,min = 0,max = 0.5))
+RandMat <- cbind(RandVec,
+                 log(RandVec),
+                 sin(RandVec),
+                 (log(RandVec)+runif(n = length(RandVec),min = 0,max = 0.2)))
+PC_rand <- prcomp(t(RandMat)) # Samples in rows and features in columns
+plot(PC_rand$x[,1], PC_rand$x[,2], ylab = "PC 2",
+     xlab = "PC 1", pch = 19, cex=1)
+```
+
+# Independent Component Analysis (ICA)
+ICA looks to find independent factors in the set of features while PCA looks for uncorrelated factors. ICA assumes that there are mutually independent latent variables that can be linearly combined to build the original set of given variables (features).
+
+  * Independent: P(X|Y)=P(X)
+  * Uncorrelated: (usually) Pearson correlation=0 => covariance between X and Y is 0
+  
+Theorem. If two random variables X and Y are independent, then they are uncorrelated.
+Reverse is not true. 
+
+```{r}
+library(fastICA)
+IC <- fastICA(t(ExpProfile), n.comp=2, alg.typ = "parallel", fun = "logcosh", alpha = 1,
+              method = "R", row.norm = FALSE, maxit = 200,
+              tol = 0.0001, verbose = TRUE)
+```
+```{r}
+plot(IC$S[,1], IC$S[,2], ylab = "IC 2",
+     xlab = "IC 1", pch = 19, cex=0.5, col = ColorVec)
+```
+
+# t-distributed Stochastic Neighbor Embeding (t-SNE)
+
+t-SNE is an algorithm to optimally map the higher dimensional space to lower dimensions paying attention to short distances. The trasformation is different for different regions. SNE is the general concept behind this type of mapping and "t" shows usage of t-distribution in t-SNE. 
+There are some important points regarding parameter setting and interpretation of t-SNE output:
+
+**Parameters:**
+
+* Perplexity: somehow shows the number of close neighbors each point has. Hence, perplexity should be smaller than the number of points. There is a suggested range for perplexity in the original paper: "The performance of SNE is fairly robust to changes in the perplexity, and typical values are between 5 and 50.". Although perplexity=5 is usually not optimal, values higher than 50 also may result in weird grouping of the data points and shapes in 2 dimensional space. 
+
+* Number of iterations required for converagence of the approach is another important parameter that depened on the input dataset. There are no fixed number to make sure of the convergence but there are some rule of thumb to check that. As an example, if there are pinched shapes in the t-SNE plot, it is better to run the approach for higher iteration number to makes sure that the resulted shapes and clusters are not artifacts of an unconverged t-SNE.
+
+**Effect of perplexity**
+```{r}
+library(tsne)
+par(mfrow=c(1,3))
+
+TSNE <- tsne(t(ExpProfile),perplexity = 5, max_iter = 1000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="perplexity = 5")
+
+TSNE <- tsne(t(ExpProfile),perplexity = 30, max_iter = 1000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="perplexity = 30")
+
+TSNE <- tsne(t(ExpProfile),perplexity = 100, max_iter = 1000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="perplexity = 100")
+```
+
+**Effect of maximum number of iterations**
+```{r}
+par(mfrow=c(1,3))
+TSNE <- tsne(t(ExpProfile),perplexity = 30, max_iter = 1000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="max_iter = 1000")
+TSNE <- tsne(t(ExpProfile),perplexity = 30, max_iter = 2000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="max_iter = 2000")
+TSNE <- tsne(t(ExpProfile),perplexity = 30, max_iter = 5000)
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "1st Dim", ylab = "2nd Dim", main="max_iter = 5000")
+```
+
+**Interpretation:**
+
+* Sizes of clusters in t-SNE do not have a meaning: t-SNE contracts the sparse clusters while expands dense ones to even out the cluster sizes in the final layouts. 
+
+* Distances between the separated clusters do not have meaning: t-SNE tries to keep the data points in proxity of each other in high dimensional space close to each other in low dimensional space while not takeing care of the greater distances, dstance betwee clusters, in the mapping.
+
+* Different perplexity or iteration number may even resuls in clusters for random data. So when you see clusters in your 2D t-SNE output, it does not mean the input data are not randomly distributed.
+
+# Uniform Manifold Approximation and Projection (UMAP)
+
+UMAP is a manifold learning method that is comptetitive to t-SNE for visualization quality while preserving the global structure of data, unlike t-SNE. UMAP has no computational restriction and is scalable to extremely large dataset, like GoogleNews, unlike t-SNE.
+
+UMAP uses k-nearest neighbor and uses Stochastic Gradient Descent to minimize the difference between the distances in the high dimensional and low dimensional spaces.
+
+
+**Definitions**
+
+* A n-dimensional manifold (n-manifold) M is a topological space that is locally homeomorphic to the Euclidean space of dimension n.
+* Locally homeomorphic means that every point in the space M is contained in an open set U such that there is a one-to-one onto map f:U -> M.
+* One-to-one onto map f:U -> M means that each element of M is mapped by exactly one element of U.
+* A topological space is a collection of open sets (with some mathematical properties).
+* A Riemannian (smooth) manifold M is a real smooth manifold with an inner product that varies smoothly from point to point in the tangent space of M.
+* Riemannian metric is collection of all the inner products of the points in the manifold M on the tangent space of M.
+
+* A simplicial complex K in n-dimensional real space is a collection of simplices in the space such that 1) Every face of a simplex of K is in K, and 2) The intersection of any two simplices of K is a face of each of them (Munkres 1993, p. 7; http://mathworld.wolfram.com/).
+* A simplex is the generalization of a tetrahedral region of space to n dimensions(http://mathworld.wolfram.com/).
+
+
+**Effect of number of neighbours**
+```{r}
+library(umap)
+par(mfrow=c(1,3))
+
+UMAP = umap(t(ExpProfile), n.epochs=200,n.neighbors=5)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.neighbors=5")
+
+UMAP = umap(t(ExpProfile), n.epochs=200,n.neighbors=10)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.neighbors=10")
+
+UMAP = umap(t(ExpProfile), n.epochs=200,n.neighbors=15)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.neighbors=15")
+```
+
+**Effect of minimum distance**
+```{r}
+par(mfrow=c(1,3))
+UMAP = umap(t(ExpProfile), n.epochs=200,min.dist=0.05)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="min.dist=0.05")
+
+UMAP = umap(t(ExpProfile), n.epochs=200,min.dist=0.1)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="min.dist=0.1")
+
+UMAP = umap(t(ExpProfile), n.epochs=200,min.dist=0.2)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="min.dist=0.2")
+```
+
+**Effect of number of epochs**
+```{r}
+par(mfrow=c(1,3))
+UMAP = umap(t(ExpProfile), n.epochs=100)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.epochs=100")
+
+UMAP = umap(t(ExpProfile), n.epochs=200)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.epochs=200")
+
+UMAP = umap(t(ExpProfile), n.epochs=500)
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main="n.epochs=500")
+```
+
+**Assumptions:**
+
+Source: https://umap-learn.readthedocs.io/en/latest/
+* The data is uniformly distributed on Riemannian manifold.
+* The Riemannian metric is locally constant (or can be approximated as such).
+* The manifold is locally connected.
+
+# Using PCA prior to t-SNE and UMAP
+You can use PCA to identify set of principle components and then implements t-SNE or UMAP to identify the 2 dimensional maps.
+
+```{r}
+PCnum <- 50
+PC_Mat <- PC$x[,c(1:PCnum)]
+
+TSNE <- tsne(PC_Mat,perplexity = 30, max_iter = 2000)
+UMAP = umap(PC_Mat)
+
+plot(TSNE, pch = 19,cex=0.5,col=ColorVec,
+     xlab = "t-SNE1", ylab = "t-SNE2", main="First 50 PCs\nperplexity = 30, max_iter = 2000")
+
+plot(UMAP$layout, pch = 19,cex=0.5,col = ColorVec,
+     xlab = "UMAP1", ylab = "UMAP2", main = "First 50 PCs")
+```
+
